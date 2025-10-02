@@ -1,63 +1,73 @@
-const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
-//Address Schema - Embedded subdocument
+/**
+ * USER MODEL - Comprehensive user management for e-commerce
+ * 
+ * Design Decisions:
+ * 1. Email as unique identifier for authentication
+ * 2. Role-based access control (customer, admin, vendor)
+ * 3. Address embedded as subdocuments for performance
+ * 4. Phone verification for security
+ * 5. Account status management for admin control
+ * 6. Social login support (optional)
+ */
 
-const addressSchema = new mongoose.Schema(
-  {
-    type: {
-      type: String,
-      enum: ["home", "office", "other"],
-      default: "home",
-    },
-    fullName: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    addressLine1: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    addressLine2: {
-      type: String,
-      trim: true,
-    },
-    city: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    state: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    pincode: {
-      type: String,
-      required: true,
-      match: [/^\d{6}$/, "Please enter a valid 6-digit pincode"],
-    },
-    country: {
-      type: String,
-      default: "India",
-      trim: true,
-    },
-    phoneNumber: {
-      type: String,
-      required: true,
-      match: [/^[6-9]\d{9}$/, "Please enter a valid mobile number"],
-    },
-    isDefault: {
-      type: Boolean,
-      default: false,
-    },
+// Address Schema - Embedded subdocument
+const addressSchema = new mongoose.Schema({
+  type: {
+    type: String,
+    enum: ['home', 'office', 'other'],
+    default: 'home'
   },
-  { _id: true, timestamps: true }
-);
-
+  fullName: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  addressLine1: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  addressLine2: {
+    type: String,
+    trim: true
+  },
+  city: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  state: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  pincode: {
+    type: String,
+    required: true,
+    match: [/^\d{6}$/, 'Please enter a valid 6-digit pincode']
+  },
+  country: {
+    type: String,
+    default: 'India',
+    trim: true
+  },
+  phoneNumber: {
+    type: String,
+    required: true,
+    match: [/^[6-9]\d{9}$/, 'Please enter a valid mobile number']
+  },
+  isDefault: {
+    type: Boolean,
+    default: false
+  }
+}, { 
+  _id: true, // Allow _id for addresses for easier updates
+  timestamps: true 
+});
 
 // Main User Schema
 const userSchema = new mongoose.Schema({
@@ -207,3 +217,136 @@ const userSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
+// Virtual Fields
+userSchema.virtual('fullName').get(function() {
+  return `${this.firstName} ${this.lastName}`;
+});
+
+userSchema.virtual('isLocked').get(function() {
+  return !!(this.lockUntil && this.lockUntil > Date.now());
+});
+
+// INDEXES FOR PERFORMANCE
+// Primary search and authentication indexes
+userSchema.index({ email: 1 }, { unique: true });
+userSchema.index({ phoneNumber: 1 }, { unique: true, sparse: true });
+
+// Role-based queries
+userSchema.index({ role: 1 });
+
+// Account status queries
+userSchema.index({ isActive: 1, role: 1 });
+
+// Social login indexes
+userSchema.index({ 'socialLogin.googleId': 1 }, { sparse: true });
+userSchema.index({ 'socialLogin.facebookId': 1 }, { sparse: true });
+
+// Compound index for admin user management
+userSchema.index({ createdAt: -1, role: 1, isActive: 1 });
+
+// PRE-SAVE MIDDLEWARE
+// Hash password before saving
+userSchema.pre('save', async function(next) {
+  // Only hash the password if it has been modified (or is new)
+  if (!this.isModified('password')) return next();
+  
+  try {
+    // Hash password with cost of 12 (secure but not too slow)
+    this.password = await bcrypt.hash(this.password, 12);
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Ensure only one default address
+userSchema.pre('save', function(next) {
+  if (this.isModified('addresses')) {
+    const defaultAddresses = this.addresses.filter(addr => addr.isDefault);
+    if (defaultAddresses.length > 1) {
+      // Keep only the first default address
+      this.addresses.forEach((addr, index) => {
+        if (index > 0 && addr.isDefault) {
+          addr.isDefault = false;
+        }
+      });
+    }
+  }
+  next();
+});
+
+// INSTANCE METHODS
+// Compare password for authentication
+userSchema.methods.comparePassword = async function(candidatePassword) {
+  try {
+    return await bcrypt.compare(candidatePassword, this.password);
+  } catch (error) {
+    throw new Error('Password comparison failed');
+  }
+};
+
+// Generate JWT tokens
+userSchema.methods.generateAccessToken = function() {
+  return jwt.sign(
+    { 
+      userId: this._id,
+      email: this.email,
+      role: this.role
+    },
+    process.env.JWT_ACCESS_SECRET,
+    { expiresIn: process.env.JWT_ACCESS_EXPIRE || '15m' }
+  );
+};
+
+userSchema.methods.generateRefreshToken = function() {
+  return jwt.sign(
+    { userId: this._id },
+    process.env.JWT_REFRESH_SECRET,
+    { expiresIn: process.env.JWT_REFRESH_EXPIRE || '7d' }
+  );
+};
+
+// Account lockout methods
+userSchema.methods.incrementLoginAttempts = function() {
+  // If we have a previous lock that has expired, restart at 1
+  if (this.lockUntil && this.lockUntil < Date.now()) {
+    return this.updateOne({
+      $unset: {
+        lockUntil: 1
+      },
+      $set: {
+        loginAttempts: 1
+      }
+    });
+  }
+  
+  const updates = { $inc: { loginAttempts: 1 } };
+  
+  // If we're at max attempts and not locked, lock the account
+  const maxAttempts = 5;
+  const lockTime = 2 * 60 * 60 * 1000; // 2 hours
+  
+  if (this.loginAttempts + 1 >= maxAttempts && !this.isLocked) {
+    updates.$set = { lockUntil: Date.now() + lockTime };
+  }
+  
+  return this.updateOne(updates);
+};
+
+// Reset login attempts
+userSchema.methods.resetLoginAttempts = function() {
+  return this.updateOne({
+    $unset: {
+      loginAttempts: 1,
+      lockUntil: 1
+    }
+  });
+};
+
+// STATIC METHODS
+// Find user by email with password
+userSchema.statics.findByEmailWithPassword = function(email) {
+  return this.findOne({ email }).select('+password +loginAttempts +lockUntil');
+};
+
+module.exports = mongoose.model('User', userSchema);
