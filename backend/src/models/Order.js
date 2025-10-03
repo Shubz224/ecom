@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-// ============ ORDER ITEM SCHEMA ============
+// ============ ORDER ITEM SCHEMA - FIXED ============
 const orderItemSchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
@@ -8,7 +8,7 @@ const orderItemSchema = new mongoose.Schema({
     required: true
   },
   
-  // Store product info at time of order (in case product changes later)
+  // Store product info at time of order
   productName: {
     type: String,
     required: true
@@ -28,9 +28,11 @@ const orderItemSchema = new mongoose.Schema({
     min: [0, 'Price cannot be negative']
   },
   
+  // FIXED: Make selectedVariant optional
   selectedVariant: {
     name: String,
-    value: String
+    value: String,
+    price: Number
   },
   
   itemTotal: {
@@ -39,13 +41,13 @@ const orderItemSchema = new mongoose.Schema({
   }
 });
 
-// ============ MAIN ORDER SCHEMA ============
+// ============ MAIN ORDER SCHEMA - FIXED ============
 const orderSchema = new mongoose.Schema({
-  // Order identification
+  // Order identification - FIXED: Remove required, generate in pre-save
   orderNumber: {
     type: String,
-    unique: true,
-    required: true
+    unique: true
+    // Removed required: true - will be generated in pre-save
   },
   
   // Customer info
@@ -113,7 +115,7 @@ const orderSchema = new mongoose.Schema({
     default: 'pending'
   },
   
-  paymentId: String, // Razorpay payment ID
+  paymentId: String,
   
   // Order status tracking
   orderStatus: {
@@ -155,12 +157,11 @@ const orderSchema = new mongoose.Schema({
 });
 
 // ============ INDEXING ============
-orderSchema.index({ user: 1, createdAt: -1 }); // User's orders
+orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ orderNumber: 1 }, { unique: true });
 orderSchema.index({ orderStatus: 1 });
 orderSchema.index({ paymentStatus: 1 });
-orderSchema.index({ createdAt: -1 }); // Recent orders
-orderSchema.index({ 'items.product': 1 }); // Find orders containing product
+orderSchema.index({ createdAt: -1 });
 
 // ============ VIRTUAL PROPERTIES ============
 orderSchema.virtual('isPaid').get(function() {
@@ -175,29 +176,32 @@ orderSchema.virtual('canCancel').get(function() {
   return ['pending', 'confirmed'].includes(this.orderStatus);
 });
 
-orderSchema.virtual('totalItems').get(function() {
-  return this.items.reduce((total, item) => total + item.quantity, 0);
-});
-
-// ============ PRE-SAVE MIDDLEWARE ============
-// Generate order number
+// ============ PRE-SAVE MIDDLEWARE - FIXED ============
 orderSchema.pre('save', async function(next) {
-  if (this.isNew) {
-    const count = await mongoose.model('Order').countDocuments();
-    this.orderNumber = `ORD${Date.now()}${(count + 1).toString().padStart(4, '0')}`;
-    
-    // Add initial status to history
-    this.statusHistory.push({
-      status: this.orderStatus,
-      timestamp: new Date(),
-      note: 'Order created'
-    });
+  // Generate order number if new order
+  if (this.isNew && !this.orderNumber) {
+    try {
+      const count = await mongoose.model('Order').countDocuments();
+      const timestamp = Date.now();
+      this.orderNumber = `ORD${timestamp}${String(count + 1).padStart(4, '0')}`;
+      
+      console.log('📦 Generated order number:', this.orderNumber);
+      
+      // Add initial status to history
+      if (!this.statusHistory || this.statusHistory.length === 0) {
+        this.statusHistory = [{
+          status: this.orderStatus,
+          timestamp: new Date(),
+          note: 'Order created'
+        }];
+      }
+    } catch (error) {
+      console.error('Error generating order number:', error);
+      return next(error);
+    }
   }
-  next();
-});
-
-// Update status dates
-orderSchema.pre('save', function(next) {
+  
+  // Update status dates when status changes
   if (this.isModified('orderStatus')) {
     const now = new Date();
     
@@ -216,12 +220,16 @@ orderSchema.pre('save', function(next) {
         break;
     }
     
-    // Add to status history
-    this.statusHistory.push({
-      status: this.orderStatus,
-      timestamp: now
-    });
+    // Add to status history if not already there
+    const lastHistory = this.statusHistory[this.statusHistory.length - 1];
+    if (!lastHistory || lastHistory.status !== this.orderStatus) {
+      this.statusHistory.push({
+        status: this.orderStatus,
+        timestamp: now
+      });
+    }
   }
+  
   next();
 });
 
@@ -229,7 +237,7 @@ orderSchema.pre('save', function(next) {
 orderSchema.methods.updateStatus = async function(newStatus, note = '') {
   this.orderStatus = newStatus;
   
-  if (note) {
+  if (note && this.statusHistory.length > 0) {
     this.statusHistory[this.statusHistory.length - 1].note = note;
   }
   
