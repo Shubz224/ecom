@@ -33,15 +33,7 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // Validate cart items
-    const invalidItems = await cart.validateCart();
-    if (invalidItems.length > 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Some items in cart are no longer available',
-        data: { invalidItems }
-      });
-    }
+    
 
     // Calculate tax (18% GST for example)
     const tax = Math.round(cart.subtotal * 0.18);
