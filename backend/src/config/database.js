@@ -6,13 +6,15 @@ const mongoose = require('mongoose');
  */
 const connectDB = async () => {
   try {
-    const conn = await mongoose.connect(process.env.MONGODB_URI, {
-      // Connection optimizations
+    const conn = await mongoose.connect(process.env.MONGODB_URI);
+
+    /*   // Connection optimizations
       maxPoolSize: 10,          // Maximum number of connections
       serverSelectionTimeoutMS: 5000,  // Keep trying for 5 seconds
       socketTimeoutMS: 45000,   // Close sockets after 45 seconds
       bufferCommands: false,    // Disable mongoose buffering
-    });
+
+    */
 
     console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
     console.log(`📊 Database: ${conn.connection.name}`);
